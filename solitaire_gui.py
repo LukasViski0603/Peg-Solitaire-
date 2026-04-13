@@ -1,17 +1,19 @@
 import tkinter as tk
 from tkinter import messagebox
-from board import EnglishBoard, HexagonBoard, ManualGame, AutomatedGame, PEG, EMPTY, INVALID
+from board import EnglishBoard, HexagonBoard, ManualGame, AutomatedGame, GameRecorder, PEG, EMPTY, INVALID
 
 class SolitaireGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("Peg Solitaire")
-        self.root.geometry("600x700")
+        self.root.geometry("600x750")
 
         self.game = None
         self.selected_cell = None
         self.cell_size = 60
         self.autoplay_active = False
+        self.replay_events = []
+        self.replay_index = 0
 
         self._create_controls()
         self._create_board_canvas()
@@ -40,6 +42,11 @@ class SolitaireGUI:
                   bg="white", fg="black", font=("Arial", 12, "bold"),
                   padx=15, pady=5, relief=tk.RAISED, bd=3).pack(side=tk.LEFT, padx=20)
 
+        self.record_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(control_frame, text="Record game", variable=self.record_var,
+                       bg="#2c3e50", fg="white", selectcolor="#34495e",
+                       font=("Arial", 10)).pack(side=tk.LEFT, padx=10)
+
         self.status_label = tk.Label(self.root, text="Click 'New Game' to start",
                                      font=("Arial", 12, "bold"), fg="#2980b9", bg="white")
         self.status_label.pack(pady=5)
@@ -53,6 +60,10 @@ class SolitaireGUI:
         self.autoplay_btn.pack(side=tk.LEFT, padx=10)
 
         tk.Button(btn_frame, text="Randomize", command=self.randomize_board,
+                  bg="white", fg="black", font=("Arial", 11, "bold"),
+                  padx=10, pady=5, relief=tk.RAISED, bd=2).pack(side=tk.LEFT, padx=10)
+
+        tk.Button(btn_frame, text="Replay", command=self.start_replay,
                   bg="white", fg="black", font=("Arial", 11, "bold"),
                   padx=10, pady=5, relief=tk.RAISED, bd=2).pack(side=tk.LEFT, padx=10)
 
@@ -75,14 +86,18 @@ class SolitaireGUI:
             return
 
         board_type = self.board_type_var.get()
-        if board_type == "English":
-            board = EnglishBoard(size)
-        else:
-            board = HexagonBoard(size)
-
+        board = EnglishBoard(size) if board_type == "English" else HexagonBoard(size)
         self.game = ManualGame(board)
         self.selected_cell = None
-        self.status_label.config(text=f"Game started! Pegs: {self.game.count_pegs()}", fg="#2980b9")
+
+        if self.record_var.get():
+            recorder = GameRecorder()
+            recorder.record_header(board_type, size)
+            self.game.set_recorder(recorder)
+            self.status_label.config(text=f"Recording! Pegs: {self.game.count_pegs()}", fg="red")
+        else:
+            self.status_label.config(text=f"Game started! Pegs: {self.game.count_pegs()}", fg="#2980b9")
+
         self.draw_board()
 
     def toggle_autoplay(self):
@@ -96,7 +111,12 @@ class SolitaireGUI:
 
         self.autoplay_active = True
         self.autoplay_btn.config(text="Stop")
+
+        recorder = self.game.recorder if self.game else None
         self.game = AutomatedGame(self.game.board)
+        if recorder:
+            self.game.set_recorder(recorder)
+
         self._autoplay_step()
 
     def _autoplay_step(self):
@@ -120,8 +140,50 @@ class SolitaireGUI:
             return
         self.game.randomize()
         self.selected_cell = None
-        self.status_label.config(text=f"Board randomized! Pegs: {self.game.count_pegs()}", fg="#e67e22")
+        self.status_label.config(text=f"Randomized! Pegs: {self.game.count_pegs()}", fg="#e67e22")
         self.draw_board()
+
+    def start_replay(self):
+        try:
+            recorder = GameRecorder()
+            board_type, size, events = recorder.load()
+        except FileNotFoundError:
+            messagebox.showerror("No Recording", "No recorded game found. Record a game first.")
+            return
+
+        board = EnglishBoard(size) if board_type == "English" else HexagonBoard(size)
+        self.game = ManualGame(board)
+        self.selected_cell = None
+        self.autoplay_active = False
+        self.replay_events = events
+        self.replay_index = 0
+        self.draw_board()
+        self.status_label.config(text="Replaying...", fg="#27ae60")
+        self.root.after(600, self._replay_step)
+
+    def _replay_step(self):
+        if self.replay_index >= len(self.replay_events):
+            self.status_label.config(text=f"Replay done! Pegs: {self.game.count_pegs()}", fg="#27ae60")
+            self.show_game_over()
+            return
+
+        event = self.replay_events[self.replay_index]
+        self.replay_index += 1
+
+        if event[0] == "MOVE":
+            _, src_row, src_col, dst_row, dst_col = event
+            self.game.board.apply_move(src_row, src_col, dst_row, dst_col)
+        elif event[0] == "RANDOMIZE":
+            cells = event[1]
+            idx = 0
+            for row in range(self.game.board.size):
+                for col in range(self.game.board.size):
+                    self.game.board.set_cell(row, col, cells[idx])
+                    idx += 1
+
+        self.draw_board()
+        self.status_label.config(text=f"Replaying... Pegs: {self.game.count_pegs()}", fg="#27ae60")
+        self.root.after(600, self._replay_step)
 
     def draw_board(self):
         self.canvas.delete("all")
@@ -136,7 +198,7 @@ class SolitaireGUI:
             for col in range(size):
                 x = offset + col * self.cell_size
                 y = offset + row * self.cell_size
-                cell = board.grid[row][col]
+                cell = board.get_cell(row, col)
 
                 if cell == INVALID:
                     continue
@@ -161,11 +223,11 @@ class SolitaireGUI:
         board = self.game.board
         if not (0 <= row < board.size and 0 <= col < board.size):
             return
-        if board.grid[row][col] == INVALID:
+        if board.get_cell(row, col) == INVALID:
             return
 
         if self.selected_cell is None:
-            if board.grid[row][col] == PEG:
+            if board.get_cell(row, col) == PEG:
                 self.selected_cell = (row, col)
                 self.draw_board()
         else:

@@ -17,6 +17,14 @@ class Board:
         """Orthogonal moves only by default."""
         return [(-2, 0), (2, 0), (0, -2), (0, 2)]
 
+    def get_cell(self, row, col):
+        """Get the state of a cell."""
+        return self.grid[row][col]
+
+    def set_cell(self, row, col, value):
+        """Set the state of a cell."""
+        self.grid[row][col] = value
+
     def is_valid_move(self, src_row, src_col, dst_row, dst_col):
         if not (0 <= src_row < self.size and 0 <= src_col < self.size):
             return False
@@ -164,10 +172,53 @@ class HexagonBoard(Board):
                 (-2, -2), (-2, 2), (2, -2), (2, 2)]
 
 
+class GameRecorder:
+    """Records and replays game moves to/from a text file."""
+
+    def __init__(self, filename="game_record.txt"):
+        self.filename = filename
+
+    def record_header(self, board_type, size):
+        with open(self.filename, "w") as f:
+            f.write(f"{board_type},{size}\n")
+
+    def record_move(self, src_row, src_col, dst_row, dst_col):
+        with open(self.filename, "a") as f:
+            f.write(f"MOVE,{src_row},{src_col},{dst_row},{dst_col}\n")
+
+    def record_randomize(self, grid, size):
+        with open(self.filename, "a") as f:
+            cells = []
+            for row in range(size):
+                for col in range(size):
+                    cells.append(str(grid[row][col]))
+            f.write(f"RANDOMIZE,{','.join(cells)}\n")
+
+    def load(self):
+        """Read recorded file, return (board_type, size, events)."""
+        with open(self.filename, "r") as f:
+            lines = f.read().splitlines()
+        parts0 = lines[0].split(",")
+        board_type, size = parts0[0], int(parts0[1])
+        events = []
+        for line in lines[1:]:
+            parts = line.split(",")
+            if parts[0] == "MOVE":
+                events.append(("MOVE", int(parts[1]), int(parts[2]), int(parts[3]), int(parts[4])))
+            elif parts[0] == "RANDOMIZE":
+                cells = list(map(int, parts[1:]))
+                events.append(("RANDOMIZE", cells))
+        return board_type, size, events
+
+
 class Game:
     """Base class for game modes."""
     def __init__(self, board):
         self.board = board
+        self.recorder = None
+
+    def set_recorder(self, recorder):
+        self.recorder = recorder
 
     def make_move(self, src_row, src_col, dst_row, dst_col):
         return self.board.apply_move(src_row, src_col, dst_row, dst_col)
@@ -188,10 +239,15 @@ class ManualGame(Game):
         super().__init__(board)
 
     def make_move(self, src_row, src_col, dst_row, dst_col):
-        return self.board.apply_move(src_row, src_col, dst_row, dst_col)
+        result = self.board.apply_move(src_row, src_col, dst_row, dst_col)
+        if result and self.recorder:
+            self.recorder.record_move(src_row, src_col, dst_row, dst_col)
+        return result
 
     def randomize(self):
         self.board.randomize()
+        if self.recorder:
+            self.recorder.record_randomize(self.board.grid, self.board.size)
 
 
 class AutomatedGame(Game):
@@ -200,9 +256,11 @@ class AutomatedGame(Game):
         super().__init__(board)
 
     def make_move(self, src_row=None, src_col=None, dst_row=None, dst_col=None):
-        """Pick and execute a random valid move."""
         moves = self.board.get_all_valid_moves()
         if not moves:
             return False
         move = random.choice(moves)
-        return self.board.apply_move(*move)
+        result = self.board.apply_move(*move)
+        if result and self.recorder:
+            self.recorder.record_move(*move)
+        return result
